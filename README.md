@@ -14,7 +14,11 @@ gcc rtspbrute.c -o rtspbrute
 
 ./rtspbrute
 
+Termux:
+
 pkg install clang -y
+
 clang rtspbrute.c -o rtspbrute
+
 ./rtspbrute
 
