@@ -13,3 +13,8 @@ port:554
 gcc rtspbrute.c -o rtspbrute
 
 ./rtspbrute
+
+pkg install clang -y
+clang rtspbrute.c -o rtspbrute
+./rtspbrute
+
