@@ -12,6 +12,10 @@ port:554
 
 gcc rtspbrute.c -o rtspbrute
 
+gcc brutehik.c -o brutehik
+
+./brutehik
+
 ./rtspbrute
 
 Termux:
